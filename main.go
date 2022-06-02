@@ -29,13 +29,12 @@ type mirror struct {
 	conn   net.Conn
 	closed uint32
 }
-
 func readAndDiscard(m mirror, closeCh chan error) {
 	for {
 		var b [defaultBufferSize]byte
 		_, err := m.conn.Read(b[:])
 		if err != nil {
-			m.conn.Close()
+			//m.conn.Close()
 			atomic.StoreUint32(&m.closed, 1)
 			select {
 			case closeCh <- err:
@@ -49,9 +48,11 @@ func readAndDiscard(m mirror, closeCh chan error) {
 func forward(from net.Conn, to net.Conn, closeCh chan error) {
 	for {
 		var b [defaultBufferSize]byte
-
+		log.Printf("got r before")
 		n, err := from.Read(b[:])
+		log.Printf("got r end (%s)", n)
 		if err != nil {
+			log.Printf("got r error (%s)", err)
 			if err != io.EOF {
 				closeCh <- fmt.Errorf("from.Read() failed: %w", err)
 			} else {
@@ -59,8 +60,9 @@ func forward(from net.Conn, to net.Conn, closeCh chan error) {
 			}
 			return
 		}
-
+		log.Printf("got write before")
 		_, err = to.Write(b[:n])
+		log.Printf("got write end")
 		if err != nil {
 			closeCh <- fmt.Errorf("to.Write() failed: %w", err)
 			return
@@ -186,7 +188,7 @@ func forwardAndZeroCopy(from net.Conn, to net.Conn, mirrors []mirror, closeCh, e
 
 			nteed, err = unix.Tee(p[0], m.mirrorPipe[1], MaxInt, SPLICE_F_MOVE)
 			if err != nil {
-				m.conn.Close()
+				//m.conn.Close()
 				atomic.StoreUint32(&m.closed, 1)
 				select {
 				case errorCh <- fmt.Errorf("error while tee(): %w", err):
@@ -234,7 +236,7 @@ func forwardAndCopy(from net.Conn, to net.Conn, mirrors []mirror, closeCh, error
 
 			_, err = mirrors[i].conn.Write(b[:n])
 			if err != nil {
-				mirrors[i].conn.Close()
+				//mirrors[i].conn.Close()
 				atomic.StoreUint32(&mirrors[i].closed, 1)
 				select {
 				case errorCh <- err:
@@ -289,9 +291,13 @@ func main() {
 	flag.StringVar(&listenAddress, "l", "", "listen address (e.g. 'localhost:8080')")
 	flag.StringVar(&forwardAddress, "f", "", "forward to address (e.g. 'localhost:8081')")
 	flag.Var(&mirrorAddresses, "m", "comma separated list of mirror addresses (e.g. 'localhost:8082,localhost:8083')")
-	flag.DurationVar(&connectTimeout, "t", 500*time.Millisecond, "mirror connect timeout")
+	flag.DurationVar(&connectTimeout, "t", 50000*time.Millisecond, "mirror connect timeout")
 	flag.DurationVar(&delay, "d", 20*time.Second, "delay connecting to mirror after unsuccessful attempt")
-	flag.DurationVar(&writeTimeout, "wt", 20*time.Millisecond, "mirror write timeout")
+	flag.DurationVar(&writeTimeout, "wt", 20000*time.Millisecond, "mirror write timeout")
+	log.Printf("got connectTimeout (%s)", connectTimeout)
+	log.Printf("got  writeTimeout (%s)", writeTimeout)
+	log.Printf("default size: {%s}", defaultBufferSize)
+
 
 	flag.Parse()
 
@@ -317,14 +323,14 @@ func main() {
 		log.Printf("accepted connection %d (%s <-> %s)", connNo, c.RemoteAddr(), c.LocalAddr())
 
 		go func(connClient net.Conn) {
-			defer connClient.Close()
+			//defer connClient.Close()
 
 			connForwardee, err := net.Dial("tcp", forwardAddress)
 			if err != nil {
 				log.Printf("error while connecting to forwarder (%s), will close client connection", err)
 				return
 			}
-			defer connForwardee.Close()
+			//defer connForwardee.Close()
 
 			var mirrors []mirror
 
@@ -342,20 +348,28 @@ func main() {
 				})
 			}
 
-			defer func() {
-				for i, m := range mirrors {
-					if closed := atomic.LoadUint32(&mirrors[i].closed); closed == 1 {
-						continue
-					}
-					m.conn.Close()
-				}
-			}()
+			//defer func() {
+			//	for i, m := range mirrors {
+			//		if closed := atomic.LoadUint32(&mirrors[i].closed); closed == 1 {
+			//			continue
+			//		}
+			//		m.conn.Close()
+			//	}
+			//}()
 
 			closeCh := make(chan error, 1024)
 			errorCh := make(chan error, 1024)
 
 			connect(connClient, connForwardee, mirrors, useZeroCopy, closeCh, errorCh)
 
+			//for i, m := range mirrors {
+			//	if closed := atomic.LoadUint32(&mirrors[i].closed); closed == 1 {
+			//		continue
+			//	}
+			//	m.conn.Close()
+			//}
+			//connClient.Close()
+			//connForwardee.Close()
 			for {
 				select {
 				case err := <-errorCh:
@@ -369,6 +383,7 @@ func main() {
 					return
 				}
 			}
+
 		}(c)
 
 		connNo += 1
